@@ -1,18 +1,21 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import from_json, col
-from pyspark.sql.types import StructType, StructField, StringType, DoubleType
+from pyspark.sql.functions import col, from_json
+from pyspark.sql.types import StructType, StringType, DoubleType
 
-# Spark session
 spark = (
     SparkSession.builder
-    .appName("CryptoKafkaConsumerHDFS")
+    .appName("KafkaToHDFS")
     .getOrCreate()
 )
 
 spark.sparkContext.setLogLevel("WARN")
 
-# Kafka source
-kafka_df = (
+schema = StructType() \
+    .add("asset", StringType()) \
+    .add("price_usd", DoubleType()) \
+    .add("event_time", StringType())
+
+df = (
     spark.readStream
     .format("kafka")
     .option("kafka.bootstrap.servers", "localhost:9092")
@@ -21,30 +24,29 @@ kafka_df = (
     .load()
 )
 
-# Schema for JSON value
-schema = StructType([
-    StructField("asset", StringType(), True),
-    StructField("price_usd", DoubleType(), True),
-    StructField("event_time", StringType(), True)
-])
-
-# Parse Kafka value
-parsed_df = (
-    kafka_df
-    .selectExpr("CAST(value AS STRING)")
-    .select(from_json(col("value"), schema).alias("data"))
-    .select("data.*")
+parsed = (
+    df.selectExpr("CAST(value AS STRING) AS json")
+      .select(from_json(col("json"), schema).alias("data"))
+      .select("data.*")
 )
 
-# Write stream to HDFS in Parquet format
-query = (
-    parsed_df
-    .writeStream
+# Console output (debug)
+console_query = (
+    parsed.writeStream
+    .format("console")
     .outputMode("append")
-    .format("parquet")  # Parquet format
-    .option("path", "/home/ashik/codes/Cc_pipe/data/crypto_prices_parquet")
-    .option("checkpointLocation", "/home/ashik/codes/Cc_pipe/data/crypto_prices_checkpoint")
+    .option("truncate", False)
     .start()
 )
 
-query.awaitTermination()
+# HDFS output (correct port 8020)
+hdfs_query = (
+    parsed.writeStream
+    .format("parquet")
+    .option("path", "hdfs://localhost:8020/crypto/prices")
+    .option("checkpointLocation", "hdfs://localhost:8020/crypto/checkpoints")
+    .outputMode("append")
+    .start()
+)
+
+spark.streams.awaitAnyTermination()
